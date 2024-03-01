@@ -35,8 +35,10 @@ Before any analysis can take place, the involved modules must be _cover
 compiled_. This means that some extra information is added to the module before
 it is compiled into a binary which then is loaded. The source file of the module
 is not affected and no `.beam` file is created. If the runtime system supports
-coverage natively, Cover will automatically use that functionality to lower the
-execution overhead for cover-compiled code.
+coverage natively, Cover will use that functionality by default to lower the
+execution overhead for cover-compiled code. Native coverage functionality can
+be disabled by setting the `use_native_coverage` application parameter for
+`tools` to `false`.
 
 Each time a function in a Cover compiled module is called, information about the
 call is added to an internal database of Cover. The coverage analysis is
@@ -2140,7 +2142,7 @@ counter_index(Mod, F, A, C, Line) ->
 
 %% Create the counter array and store as a persistent term.
 maybe_create_counters(Mod, true) ->
-    case has_native_coverage() of
+    case use_native_coverage() of
         false ->
             Cref = create_counters(Mod),
             Key = {?MODULE,Mod},
@@ -2160,7 +2162,7 @@ create_counters(Mod) ->
     Cref.
 
 patch_code(Mod, Forms, Local) ->
-    case has_native_coverage() of
+    case use_native_coverage() of
         true ->
             _ = catch code:reset_coverage(Mod),
             Forms;
@@ -2230,7 +2232,7 @@ move_counters(Mod) ->
     move_counters(Mod, Process).
 
 move_counters(Mod, Process) ->
-    Move = case has_native_coverage() of
+    Move = case use_native_coverage() of
                true ->
                    native_move(Mod);
                false ->
@@ -2249,7 +2251,7 @@ move_counters1('$end_of_table', _Move, _Process) ->
 
 counters_mapping_table(Mod) ->
     Mapping = counters_mapping(Mod),
-    case has_native_coverage() of
+    case use_native_coverage() of
         false ->
             Cref = get_counters_ref(Mod),
             #{size:=Size} = counters:info(Cref),
@@ -2298,7 +2300,7 @@ native_move(Mod) ->
 
 %% Reset counters (set counters to 0).
 reset_counters(Mod) ->
-    case has_native_coverage() of
+    case use_native_coverage() of
         true ->
             _ = catch code:reset_coverage(Mod),
             ok;
@@ -2997,5 +2999,5 @@ html_encoding(latin1) ->
 html_encoding(utf8) ->
     "utf-8".
 
-has_native_coverage() ->
-    code:coverage_support().
+use_native_coverage() ->
+    code:coverage_support() andalso application:get_env(tools, use_native_coverage, true).
