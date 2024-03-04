@@ -192,6 +192,7 @@ code(3), compile(3)
 	 stop/0, stop/1,
          local_only/0]).
 -export([remote_start/1,get_main_node/0]).
+-export([use_native_coverage/0]).
 
 %% Used internally to ensure we upgrade the code to the latest version.
 -export([main_process_loop/1,remote_process_loop/1]).
@@ -2999,5 +3000,6 @@ html_encoding(latin1) ->
 html_encoding(utf8) ->
     "utf-8".
 
+-spec use_native_coverage() -> boolean().
 use_native_coverage() ->
     code:coverage_support() andalso application:get_env(tools, use_native_coverage, true).
