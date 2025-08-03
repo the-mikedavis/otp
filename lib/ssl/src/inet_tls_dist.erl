@@ -1086,10 +1086,63 @@ ktls_opt_cipher(
             rx -> TLS_RX
         end,
     {ok, {{SOL_TLS,TLS_TxRx}, Value}};
+
+%% include/uapi/linux/tls.h in kernel codebase
+%%
+%% #define TLS_CIPHER_AES_GCM_128			51
+%% #define TLS_CIPHER_AES_GCM_128_IV_SIZE		8
+%% #define TLS_CIPHER_AES_GCM_128_KEY_SIZE		16
+%% #define TLS_CIPHER_AES_GCM_128_SALT_SIZE		4
+%% #define TLS_CIPHER_AES_GCM_128_TAG_SIZE		16
+%% #define TLS_CIPHER_AES_GCM_128_REC_SEQ_SIZE		8
+%% ---
+%% #define TLS_CIPHER_AES_GCM_256			52
+%% #define TLS_CIPHER_AES_GCM_256_IV_SIZE		8
+%% #define TLS_CIPHER_AES_GCM_256_KEY_SIZE		32
+%% #define TLS_CIPHER_AES_GCM_256_SALT_SIZE		4
+%% #define TLS_CIPHER_AES_GCM_256_TAG_SIZE		16
+%% #define TLS_CIPHER_AES_GCM_256_REC_SEQ_SIZE		8
+
+
 ktls_opt_cipher(
-  _OS, TLS_version, CipherSpec, _CipherState, _CipherSeq, _TxRx) ->
+  _OS,
+  _TLS_version = ?TLS_1_3, % 'tlsv1.3'
+  _CipherSpec = ?TLS_AES_128_GCM_SHA256,
+  #cipher_state{
+     key = <<Key:16/bytes>>,
+     iv = <<Salt:4/bytes, IV:8/bytes>> },
+  CipherSeq,
+  TxRx) when is_integer(CipherSeq) ->
+    %%
+    %% See include/linux/tls.h
+    %%
+    TLS_1_3_VERSION_MAJOR = 3,
+    TLS_1_3_VERSION_MINOR = 4,
+    TLS_1_3_VERSION =
+        (TLS_1_3_VERSION_MAJOR bsl 8) bor TLS_1_3_VERSION_MINOR,
+    TLS_CIPHER_AES_GCM_128 = 51,
+    SOL_TLS = 282,
+    TLS_TX = 1,
+    TLS_RX = 2,
+    Value =
+        <<TLS_1_3_VERSION:16/native,
+          TLS_CIPHER_AES_GCM_128:16/native,
+          IV/bytes, Key/bytes,
+          Salt/bytes, CipherSeq:64/native>>,
+    %%
+    SOL_TLS = 282,
+    TLS_TX = 1,
+    TLS_RX = 2,
+    TLS_TxRx =
+        case TxRx of
+            tx -> TLS_TX;
+            rx -> TLS_RX
+        end,
+    {ok, {{SOL_TLS,TLS_TxRx}, Value}};
+ktls_opt_cipher(
+  _OS, TLS_version, CipherSpec, CipherState, _CipherSeq, _TxRx) ->
     {error,
-     {ktls_notsup, {cipher, TLS_version, CipherSpec, _CipherState}}}.
+     {ktls_notsup, {cipher, TLS_version, CipherSpec, CipherState}}}.
 
 
 %% -------------------------------------------------------------------------
