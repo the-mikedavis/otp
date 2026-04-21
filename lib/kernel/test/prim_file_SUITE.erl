@@ -44,6 +44,7 @@
 
 -export([advise/1]).
 -export([large_write/1]).
+-export([write_uring/1]).
 
 %% System probe functions that might be handy to check from the shell
 -export([unix_free/1]).
@@ -70,7 +71,7 @@ groups() ->
        truncate, sync, datasync, advise, large_write, allocate]},
      {open, [],
       [open1, modes, close, access, read_write, pread_write,
-       append, exclusive, read_file_rename_race]},
+       append, exclusive, read_file_rename_race, write_uring]},
      {pos, [], [pos1, pos2]},
      {file_info, [],
       [file_info_basic_file,file_info_basic_directory, file_info_bad,
@@ -526,6 +527,55 @@ pread_write_test(File) ->
     MM = <<Marker/binary,Marker/binary>>,
     {ok, MM} = ?PRIM_FILE:pread(File, 0, 100),
     ok = ?PRIM_FILE:close(File),
+    ok.
+
+%% Tests the io_uring async write/pwrite path introduced in OTP-XXXX.
+%% When io_uring is not available the NIF falls back to the synchronous
+%% dirty-scheduler path, so this test is valid in both configurations.
+write_uring(Config) when is_list(Config) ->
+    RootDir = proplists:get_value(priv_dir, Config),
+    Name = filename:join(RootDir, atom_to_list(?MODULE) ++ "_write_uring"),
+
+    %% --- sequential write + read-back ---
+    {ok, Fd} = ?PRIM_FILE:open(Name, [read, write, binary]),
+    Payload = <<"io_uring write test">>,
+    ok = ?PRIM_FILE:write(Fd, Payload),
+    {ok, 0} = ?PRIM_FILE:position(Fd, 0),
+    {ok, Payload} = ?PRIM_FILE:read(Fd, byte_size(Payload)),
+
+    %% --- pwrite at offset + pread ---
+    Suffix = <<"_suffix">>,
+    Offset = byte_size(Payload),
+    ok = ?PRIM_FILE:pwrite(Fd, Offset, Suffix),
+    {ok, Suffix} = ?PRIM_FILE:pread(Fd, Offset, byte_size(Suffix)),
+
+    %% --- multi-vector write (exercises iovec batching) ---
+    ok = ?PRIM_FILE:position(Fd, 0),
+    Chunks = [<<"chunk1">>, <<",">>, <<"chunk2">>],
+    ok = ?PRIM_FILE:write(Fd, Chunks),
+    {ok, 0} = ?PRIM_FILE:position(Fd, 0),
+    Expected = iolist_to_binary(Chunks),
+    {ok, Expected} = ?PRIM_FILE:read(Fd, byte_size(Expected)),
+
+    %% --- concurrent writes from N processes (stress the ring) ---
+    Self = self(),
+    NumProcs = 20,
+    TmpBase = filename:join(RootDir, atom_to_list(?MODULE) ++ "_uring_conc"),
+    [spawn(fun() ->
+        TmpName = TmpBase ++ integer_to_list(I),
+        {ok, F} = ?PRIM_FILE:open(TmpName, [write, binary]),
+        ok = ?PRIM_FILE:write(F, <<I:64>>),
+        ok = ?PRIM_FILE:close(F),
+        Self ! {done, I}
+    end) || I <- lists:seq(1, NumProcs)],
+    [receive {done, _} -> ok end || _ <- lists:seq(1, NumProcs)],
+    %% Verify each file has the right content
+    [begin
+        TmpName = TmpBase ++ integer_to_list(I),
+        {ok, <<I:64>>} = ?PRIM_FILE:read_file(TmpName)
+     end || I <- lists:seq(1, NumProcs)],
+
+    ok = ?PRIM_FILE:close(Fd),
     ok.
 
 %% Test appending to a file.

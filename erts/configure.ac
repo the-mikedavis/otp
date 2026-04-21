@@ -1070,6 +1070,18 @@ AC_SUBST(DEFAULT_TYPES)
 
 AC_CHECK_FUNCS([posix_fadvise closefrom])
 AC_CHECK_HEADERS([linux/falloc.h])
+
+dnl Check for io_uring support (liburing)
+URING_LIBS=""
+AC_CHECK_HEADER([liburing.h],
+  [AC_CHECK_LIB([uring], [io_uring_queue_init],
+    [AC_DEFINE([HAVE_IO_URING], [1],
+               [Define if io_uring is available via liburing])
+     URING_LIBS="-luring"],
+    [])],
+  [])
+AC_SUBST(URING_LIBS)
+
 dnl * Old glibcs have broken fallocate64(). Make sure not to use it.
 AC_CACHE_CHECK([whether fallocate() works],i_cv_fallocate_works,[
     AC_LINK_IFELSE([AC_LANG_PROGRAM([[

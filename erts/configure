@@ -669,6 +669,7 @@ BITS64
 LIBSCTP
 SYSTEMD_DAEMON_LIBS
 SOCKET_LIBS
+URING_LIBS
 Z_LIB
 TERMCAP_LIB
 THR_DEFS
@@ -16249,6 +16250,35 @@ if test "x$ac_cv_header_linux_falloc_h" = xyes
 then :
   printf "%s\n" "#define HAVE_LINUX_FALLOC_H 1" >>confdefs.h
 
+fi
+
+# Check for io_uring support (liburing)
+URING_LIBS=""
+ac_fn_c_check_header_compile "$LINENO" "liburing.h" "ac_cv_header_liburing_h" "$ac_includes_default"
+if test "x$ac_cv_header_liburing_h" = xyes
+then :
+  { printf "%s\n" "$as_me:${as_lineno-$LINENO}: checking for io_uring_queue_init in -luring" >&5
+printf %s "checking for io_uring_queue_init in -luring... " >&6; }
+  save_LIBS="$LIBS"
+  LIBS="-luring $LIBS"
+  cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+/* end confdefs.h.  */
+#include <liburing.h>
+int main(void) { struct io_uring r; io_uring_queue_init(1,&r,0); return 0; }
+_ACEOF
+  if ac_fn_c_try_link "$LINENO"
+  then :
+    printf "%s\n" "#define HAVE_IO_URING 1" >>confdefs.h
+    URING_LIBS="-luring"
+    printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: yes" >&5
+    printf "%s\n" "yes" >&6
+  else case e in #(
+    e)
+    printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: no" >&5
+    printf "%s\n" "no" >&6 ;;
+  esac
+  fi
+  LIBS="$save_LIBS"
 fi
 
 { printf "%s\n" "$as_me:${as_lineno-$LINENO}: checking whether fallocate() works" >&5

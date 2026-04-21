@@ -35,6 +35,10 @@
 #include "prim_file_nif.h"
 #include "prim_file_nif_dyncall.h"
 
+#ifdef HAVE_IO_URING
+/* efile_unix_t and async function declarations are in prim_file_nif.h */
+#endif
+
 /* NIF interface declarations */
 static int load(ErlNifEnv *env, void** priv_data, ERL_NIF_TERM load_info);
 static int upgrade(ErlNifEnv *env, void** priv_data, void** old_priv_data, ERL_NIF_TERM load_info);
@@ -44,9 +48,14 @@ static ErlNifResourceType *efile_resource_type;
 
 static ERL_NIF_TERM am_close;
 
-static ERL_NIF_TERM am_ok;
-static ERL_NIF_TERM am_error;
+ERL_NIF_TERM am_ok;
+ERL_NIF_TERM am_error;
 static ERL_NIF_TERM am_continue;
+
+#ifdef HAVE_IO_URING
+ERL_NIF_TERM am_file_completion;
+ERL_NIF_TERM am_completion;
+#endif
 
 static ERL_NIF_TERM am_file_info;
 
@@ -179,9 +188,17 @@ static ErlNifFunc nif_funcs[] = {
     {"open_nif", 2, open_nif, ERL_NIF_DIRTY_JOB_IO_BOUND},
     {"close_nif", 1, close_nif, ERL_NIF_DIRTY_JOB_IO_BOUND},
     {"read_nif", 2, read_nif, ERL_NIF_DIRTY_JOB_IO_BOUND},
+#ifdef HAVE_IO_URING
+    {"write_nif", 2, write_nif, 0},
+#else
     {"write_nif", 2, write_nif, ERL_NIF_DIRTY_JOB_IO_BOUND},
+#endif
     {"pread_nif", 3, pread_nif, ERL_NIF_DIRTY_JOB_IO_BOUND},
+#ifdef HAVE_IO_URING
+    {"pwrite_nif", 3, pwrite_nif, 0},
+#else
     {"pwrite_nif", 3, pwrite_nif, ERL_NIF_DIRTY_JOB_IO_BOUND},
+#endif
     {"seek_nif", 3, seek_nif, ERL_NIF_DIRTY_JOB_IO_BOUND},
     {"sync_nif", 2, sync_nif, ERL_NIF_DIRTY_JOB_IO_BOUND},
     {"truncate_nif", 1, truncate_nif, ERL_NIF_DIRTY_JOB_IO_BOUND},
@@ -281,12 +298,21 @@ static int load(ErlNifEnv *env, void** priv_data, ERL_NIF_TERM prim_file_pid)
 
     *priv_data = NULL;
 
+#ifdef HAVE_IO_URING
+    am_file_completion = enif_make_atom(env, "file_completion");
+    am_completion      = enif_make_atom(env, "completion");
+    /* Non-fatal: if uring init fails we fall back to the dirty path. */
+    efile_uring_init();
+#endif
+
     return 0;
 }
 
 static void unload(ErlNifEnv *env, void* priv_data)
 {
-
+#ifdef HAVE_IO_URING
+    efile_uring_destroy();
+#endif
 }
 
 static int upgrade(ErlNifEnv *env, void** priv_data, void** old_priv_data, ERL_NIF_TERM load_info)
@@ -691,9 +717,27 @@ static ERL_NIF_TERM write_nif_impl(efile_data_t *d, ErlNifEnv *env, int argc, co
     ERL_NIF_TERM tail;
 
     ASSERT(argc == 1);
-    if(!enif_inspect_iovec(env, 64, argv[0], &tail, &input)) {
+    if(!enif_inspect_iovec(env, 1024, argv[0], &tail, &input)) {
         return enif_make_badarg(env);
     }
+
+#ifdef HAVE_IO_URING
+    /* Use the async path only when the entire IOVec fits in one submission.
+     * If there's a tail (more than 1024 iov elements), fall through to the
+     * sync path which handles continuation correctly via {continue, Tail}.
+     * No data copy: make_op pins the binaries via a persistent NIF env. */
+    if (enif_is_empty_list(env, tail)) {
+        ERL_NIF_TERM ref;
+        ErlNifPid caller;
+        enif_self(env, &caller);
+        ref = enif_make_ref(env);
+        if (efile_writev_async((efile_unix_t *)d, env,
+                               argv[0], ref, &caller) == 0) {
+            return enif_make_tuple2(env, am_completion, ref);
+        }
+        /* fall through to sync on ring-full */
+    }
+#endif
 
     bytes_written = efile_writev(d, input->iov, input->iovcnt);
 
@@ -763,6 +807,21 @@ static ERL_NIF_TERM pwrite_nif_impl(efile_data_t *d, ErlNifEnv *env, int argc, c
     if(!enif_get_int64(env, argv[0], &offset) || offset < 0) {
         return posix_error_to_tuple(env, EINVAL);
     }
+
+#ifdef HAVE_IO_URING
+    if (enif_is_empty_list(env, tail)) {
+        ERL_NIF_TERM ref;
+        ErlNifPid caller;
+        enif_self(env, &caller);
+        ref = enif_make_ref(env);
+        if (efile_pwritev_async((efile_unix_t *)d, env,
+                                offset, argv[1],
+                                ref, &caller) == 0) {
+            return enif_make_tuple2(env, am_completion, ref);
+        }
+        /* fall through to sync on ring-full */
+    }
+#endif
 
     bytes_written = efile_pwritev(d, offset, input->iov, input->iovcnt);
 

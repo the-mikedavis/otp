@@ -63,11 +63,6 @@
 #define IOV_MAX 16
 #endif
 
-typedef struct {
-    efile_data_t common;
-    int fd;
-} efile_unix_t;
-
 static int has_invalid_null_termination(const ErlNifBinary *path) {
     const char *null_pos, *end_pos;
 

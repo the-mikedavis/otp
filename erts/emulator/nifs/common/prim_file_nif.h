@@ -21,6 +21,9 @@
  * %CopyrightEnd%
  */
 
+#ifndef PRIM_FILE_NIF_H
+#define PRIM_FILE_NIF_H
+
 typedef int posix_errno_t;
 
 enum efile_modes_t {
@@ -264,3 +267,21 @@ posix_errno_t efile_get_device_cwd(ErlNifEnv *env, int device_index, ERL_NIF_TER
 /** @brief A Windows-specific function for returning the 8.3-name of a given
  * file or directory. */
 posix_errno_t efile_altname(ErlNifEnv *env, const efile_path_t *path, ERL_NIF_TERM *result);
+
+#ifdef HAVE_IO_URING
+typedef struct {
+    efile_data_t common;
+    int fd;
+} efile_unix_t;
+
+int  efile_uring_init(void);
+void efile_uring_destroy(void);
+int  efile_writev_async(efile_unix_t *u, ErlNifEnv *env,
+                        ERL_NIF_TERM iovec_term,
+                        ERL_NIF_TERM ref, ErlNifPid *caller);
+int  efile_pwritev_async(efile_unix_t *u, ErlNifEnv *env,
+                         Sint64 offset, ERL_NIF_TERM iovec_term,
+                         ERL_NIF_TERM ref, ErlNifPid *caller);
+#endif /* HAVE_IO_URING */
+
+#endif /* PRIM_FILE_NIF_H */
