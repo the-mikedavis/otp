@@ -836,6 +836,9 @@
 /* Define to 1 if you have the <linux/falloc.h> header file. */
 #undef HAVE_LINUX_FALLOC_H
 
+/* Define to 1 if io_uring is available via liburing */
+#undef HAVE_IO_URING
+
 /* Define if the targeted system supports the `perf` profiler */
 #undef HAVE_LINUX_PERF_SUPPORT
 

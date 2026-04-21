@@ -364,6 +364,8 @@ CS_LDFLAGS = $(LDFLAGS)
 CS_LIBS = -L../lib/internal/$(TARGET) -lerts_internal$(TYPEMARKER) @ERTS_INTERNAL_X_LIBS@ @SOCKET_LIBS@
 
 LIBS	+= @TERMCAP_LIB@ -L../lib/internal/$(TARGET) @ERTS_INTERNAL_X_LIBS@
+LIBS	+= @URING_LIBS@
+URING_LIBS = @URING_LIBS@
 
 ifdef Z_LIB
 # Use shared zlib library
@@ -1247,6 +1249,10 @@ OS_OBJS = \
 	$(OBJDIR)/sys_time.o \
 	$(OBJDIR)/sys_signal_stack.o \
 	$(OBJDIR)/unix_socket_syncio.o
+
+ifneq ($(URING_LIBS),)
+OS_OBJS += $(OBJDIR)/unix_prim_file_uring.o
+endif
 
 DRV_OBJS = \
 	$(OBJDIR)/inet_drv.o \

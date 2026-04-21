@@ -258,6 +258,10 @@ write_1(FRef, IOVec) ->
             write_1(FRef, Remainder);
         ok ->
             ok;
+        {completion, Ref} ->
+            receive
+                {file_completion, Ref, Result} -> Result
+            end;
         {error, Reason} ->
             {error, Reason}
     end.
@@ -386,6 +390,10 @@ pwrite_plain(FRef, Offset, IOVec) ->
             pwrite_plain(FRef, Offset + BytesWritten, Remainder);
         ok ->
             ok;
+        {completion, Ref} ->
+            receive
+                {file_completion, Ref, Result} -> Result
+            end;
         {error, Reason} ->
             {error, Reason}
     end.
