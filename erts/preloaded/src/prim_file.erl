@@ -56,6 +56,8 @@
 
 -export([copy/3, start/0]).
 
+-export([write_batch/1]).
+
 -include("file_int.hrl").
 
 -type prim_file_ref() :: term().
@@ -76,7 +78,8 @@
        del_dir_nif/1, get_device_cwd_nif/1, set_cwd_nif/1, get_cwd_nif/0,
        ipread_s32bu_p32bu_nif/3, read_file_nif/1,
        get_handle_nif/1, delayed_close_nif/1, altname_nif/1,
-       file_desc_to_ref_nif/1]).
+       file_desc_to_ref_nif/1,
+       write_batch_nif/1]).
 
 -type prim_file_name() :: string() | unicode:unicode_binary().
 -type prim_file_name_error() :: 'error' | 'ignore' | 'warning'.
@@ -260,9 +263,44 @@ write_1(FRef, IOVec) ->
             receive
                 {file_completion, Ref, Result} -> Result
             end;
+        {completion, Ref, Tail} ->
+            %% First chunk submitted; wait for it then write the tail.
+            case receive {file_completion, Ref, R} -> R end of
+                ok -> write_1(FRef, Tail);
+                Err -> Err
+            end;
         {error, Reason} ->
             {error, Reason}
     end.
+
+%% write_batch([{Fd, IOData}]) -> ok | {error, Reason}
+%%
+%% Submits all writes to io_uring in a single syscall and waits for
+%% all completions. On systems without io_uring support this falls back
+%% to sequential writes.
+write_batch(FdDataList) ->
+    try
+        Pairs = [{begin #{ handle := FRef } = get_fd_data(Fd), FRef end,
+                  IOData}
+                 || {Fd, IOData} <- FdDataList],
+        case write_batch_nif(Pairs) of
+            Refs when is_list(Refs) ->
+                [receive {file_completion, Ref, ok} -> ok end || Ref <- Refs],
+                ok;
+            {error, enotsup} ->
+                %% No io_uring — fall back to sequential writes
+                lists:foreach(fun({Fd, IOData}) -> ok = write(Fd, IOData) end,
+                              FdDataList);
+            {error, _} = Err ->
+                Err
+        end
+    catch
+        error:badarg ->
+            {error, badarg}
+    end.
+
+write_batch_nif(_Pairs) ->
+    erlang:nif_error(undef).
 
 truncate(Fd) ->
     try
@@ -380,6 +418,11 @@ pwrite_plain(FRef, Offset, IOVec) ->
         {completion, Ref} ->
             receive
                 {file_completion, Ref, Result} -> Result
+            end;
+        {completion, Ref, Tail} ->
+            case receive {file_completion, Ref, R} -> R end of
+                ok -> pwrite_plain(FRef, Offset, Tail);
+                Err -> Err
             end;
         {error, Reason} ->
             {error, Reason}

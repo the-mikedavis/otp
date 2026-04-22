@@ -37,7 +37,14 @@
 
 #ifdef HAVE_IO_URING
 /* efile_unix_t and async function declarations are in prim_file_nif.h */
+static ERL_NIF_TERM write_batch_nif(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[]);
 #endif
+static ERL_NIF_TERM write_batch_nif_stub(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[]) {
+    (void)argc; (void)argv;
+    return enif_make_tuple2(env,
+        enif_make_atom(env, "error"),
+        enif_make_atom(env, "enotsup"));
+}
 
 /* NIF interface declarations */
 static int load(ErlNifEnv *env, void** priv_data, ERL_NIF_TERM load_info);
@@ -233,6 +240,11 @@ static ErlNifFunc nif_funcs[] = {
     {"delayed_close_nif", 1, delayed_close_nif, ERL_NIF_DIRTY_JOB_IO_BOUND},
     {"altname_nif", 1, altname_nif, ERL_NIF_DIRTY_JOB_IO_BOUND},
     {"file_desc_to_ref_nif", 1, file_desc_to_ref_nif, ERL_NIF_DIRTY_JOB_IO_BOUND},
+#ifdef HAVE_IO_URING
+    {"write_batch_nif", 1, write_batch_nif, 0},
+#else
+    {"write_batch_nif", 1, write_batch_nif_stub, 0},
+#endif
 };
 
 ERL_NIF_INIT(prim_file, nif_funcs, load, NULL, upgrade, unload)
@@ -722,20 +734,23 @@ static ERL_NIF_TERM write_nif_impl(efile_data_t *d, ErlNifEnv *env, int argc, co
     }
 
 #ifdef HAVE_IO_URING
-    /* Use the async path only when the entire IOVec fits in one submission.
-     * If there's a tail (more than 1024 iov elements), fall through to the
-     * sync path which handles continuation correctly via {continue, Tail}.
-     * No data copy: make_op pins the binaries via a persistent NIF env. */
-    if (enif_is_empty_list(env, tail)) {
+    {
         ERL_NIF_TERM ref;
         ErlNifPid caller;
         enif_self(env, &caller);
         ref = enif_make_ref(env);
         if (efile_writev_async((efile_unix_t *)d, env,
-                               argv[0], ref, &caller) == 0) {
+                               argv[0], ref, &caller, 1) == 0) {
+            /* If there's a tail, the Erlang side will call write_nif again
+             * for the remainder after receiving the completion. */
+            if (!enif_is_empty_list(env, tail)) {
+                /* Return completion + tail so prim_file can loop */
+                return enif_make_tuple3(env, am_completion, ref, tail);
+            }
             return enif_make_tuple2(env, am_completion, ref);
         }
-        /* fall through to sync on ring-full */
+        /* Ring full — return error rather than blocking a normal scheduler */
+        return posix_error_to_tuple(env, EAGAIN);
     }
 #endif
 
@@ -752,6 +767,54 @@ static ERL_NIF_TERM write_nif_impl(efile_data_t *d, ErlNifEnv *env, int argc, co
 
     return am_ok;
 }
+
+#ifdef HAVE_IO_URING
+/* write_batch_nif(List :: [{FRef, IOVec}]) -> [Ref] | {error, Reason}
+ *
+ * Submits all writes to io_uring in a single io_uring_submit call.
+ * Returns a list of refs; the caller awaits {file_completion, Ref, ok}
+ * for each ref. The caller must not perform other operations on the fds
+ * until all completions have been received. */
+static ERL_NIF_TERM write_batch_nif(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[]) {
+    ERL_NIF_TERM list, head, tail_list;
+    ERL_NIF_TERM refs = enif_make_list(env, 0);
+    ErlNifPid caller;
+    ERL_NIF_TERM result;
+
+    if (argc != 1 || !enif_is_list(env, argv[0]))
+        return enif_make_badarg(env);
+
+    enif_self(env, &caller);
+    list = argv[0];
+
+    while (enif_get_list_cell(env, list, &head, &tail_list)) {
+        const ERL_NIF_TERM *pair;
+        int arity;
+        efile_data_t *d;
+        ERL_NIF_TERM ref;
+
+        if (!enif_get_tuple(env, head, &arity, &pair) || arity != 2)
+            return enif_make_badarg(env);
+
+        if (!get_file_data(env, pair[0], &d))
+            return enif_make_badarg(env);
+
+        ref = enif_make_ref(env);
+
+        if (efile_writev_async((efile_unix_t *)d, env, pair[1], ref, &caller, 0) != 0)
+            return posix_error_to_tuple(env, EAGAIN);
+
+        refs = enif_make_list_cell(env, ref, refs);
+        list = tail_list;
+    }
+
+    /* Submit all queued SQEs in one syscall */
+    efile_uring_submit();
+
+    enif_make_reverse_list(env, refs, &result);
+    return result;
+}
+#endif /* HAVE_IO_URING */
 
 static ERL_NIF_TERM pread_nif_impl(efile_data_t *d, ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[]) {
     Sint64 bytes_read, block_size, offset;
@@ -809,17 +872,20 @@ static ERL_NIF_TERM pwrite_nif_impl(efile_data_t *d, ErlNifEnv *env, int argc, c
     }
 
 #ifdef HAVE_IO_URING
-    if (enif_is_empty_list(env, tail)) {
+    {
         ERL_NIF_TERM ref;
         ErlNifPid caller;
         enif_self(env, &caller);
         ref = enif_make_ref(env);
         if (efile_pwritev_async((efile_unix_t *)d, env,
                                 offset, argv[1],
-                                ref, &caller) == 0) {
+                                ref, &caller, 1) == 0) {
+            if (!enif_is_empty_list(env, tail)) {
+                return enif_make_tuple3(env, am_completion, ref, tail);
+            }
             return enif_make_tuple2(env, am_completion, ref);
         }
-        /* fall through to sync on ring-full */
+        return posix_error_to_tuple(env, EAGAIN);
     }
 #endif
 

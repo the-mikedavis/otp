@@ -278,10 +278,11 @@ int  efile_uring_init(void);
 void efile_uring_destroy(void);
 int  efile_writev_async(efile_unix_t *u, ErlNifEnv *env,
                         ERL_NIF_TERM iovec_term,
-                        ERL_NIF_TERM ref, ErlNifPid *caller);
+                        ERL_NIF_TERM ref, ErlNifPid *caller, int submit);
 int  efile_pwritev_async(efile_unix_t *u, ErlNifEnv *env,
                          Sint64 offset, ERL_NIF_TERM iovec_term,
-                         ERL_NIF_TERM ref, ErlNifPid *caller);
+                         ERL_NIF_TERM ref, ErlNifPid *caller, int submit);
+void efile_uring_submit(void);
 #endif /* HAVE_IO_URING */
 
 #endif /* PRIM_FILE_NIF_H */

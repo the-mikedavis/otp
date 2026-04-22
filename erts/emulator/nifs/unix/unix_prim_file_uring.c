@@ -142,7 +142,7 @@ static pending_op_t *make_op(ErlNifEnv *call_env, ERL_NIF_TERM iovec_term,
                               ERL_NIF_TERM ref, ErlNifPid *caller)
 {
     pending_op_t *op;
-    ErlNifIOVec vec, *iovec = &vec;
+    ErlNifIOVec *iovec;
     ERL_NIF_TERM tail;
 
     op = enif_alloc(sizeof(pending_op_t));
@@ -154,6 +154,9 @@ static pending_op_t *make_op(ErlNifEnv *call_env, ERL_NIF_TERM iovec_term,
     op->ref_env = enif_alloc_env();
     if (!op->ref_env) { enif_free(op); return NULL; }
 
+    /* Pass NULL as initial *iovec to force heap allocation (not stack).
+     * This ensures op->iov remains valid after make_op returns. */
+    iovec = NULL;
     if (!enif_inspect_iovec(op->ref_env, 1024,
                             enif_make_copy(op->ref_env, iovec_term),
                             &tail, &iovec)) {
@@ -172,7 +175,7 @@ static pending_op_t *make_op(ErlNifEnv *call_env, ERL_NIF_TERM iovec_term,
 
 int efile_writev_async(efile_unix_t *u, ErlNifEnv *env,
                        ERL_NIF_TERM iovec_term,
-                       ERL_NIF_TERM ref, ErlNifPid *caller)
+                       ERL_NIF_TERM ref, ErlNifPid *caller, int submit)
 {
     struct io_uring_sqe *sqe;
     pending_op_t *op;
@@ -185,13 +188,13 @@ int efile_writev_async(efile_unix_t *u, ErlNifEnv *env,
 
     io_uring_prep_writev(sqe, u->fd, op->iov, op->iovlen, -1);
     io_uring_sqe_set_data(sqe, op);
-    io_uring_submit(&uring);
+    if (submit) io_uring_submit(&uring);
     return 0;
 }
 
 int efile_pwritev_async(efile_unix_t *u, ErlNifEnv *env,
                         Sint64 offset, ERL_NIF_TERM iovec_term,
-                        ERL_NIF_TERM ref, ErlNifPid *caller)
+                        ERL_NIF_TERM ref, ErlNifPid *caller, int submit)
 {
     struct io_uring_sqe *sqe;
     pending_op_t *op;
@@ -204,8 +207,13 @@ int efile_pwritev_async(efile_unix_t *u, ErlNifEnv *env,
 
     io_uring_prep_writev(sqe, u->fd, op->iov, op->iovlen, (off_t)offset);
     io_uring_sqe_set_data(sqe, op);
-    io_uring_submit(&uring);
+    if (submit) io_uring_submit(&uring);
     return 0;
+}
+
+void efile_uring_submit(void)
+{
+    io_uring_submit(&uring);
 }
 
 #endif /* HAVE_IO_URING */
